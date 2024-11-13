@@ -1,88 +1,139 @@
-import re
+import time
 
-def cargar_gramatica(nombre_archivo):
-    try:
-        with open(nombre_archivo, 'r') as archivo:
-            lineas = archivo.readlines()
-        return [linea.strip() for linea in lineas if linea.strip()]
-    except FileNotFoundError:
-        print(f"Error: El archivo {nombre_archivo} no fue encontrado.")
-        return []
+def descomponer_producciones(gramatica):
+    """
+    Descompone las producciones con múltiples símbolos en el lado derecho para cumplir con la CNF.
+    :param gramatica: Diccionario que representa la gramática.
+    :return: Gramática con producciones binarias.
+    """
+    nueva_gramatica = {}
+    contador_auxiliar = 1
 
-def validar_produccion(produccion):
-    regex = r"[A-Z]\s*->\s*([A-Za-z0-9]+(\|[A-Za-z0-9]+)*)"
-    return re.match(regex, produccion)
+    for no_terminal, producciones in gramatica.items():
+        nueva_gramatica[no_terminal] = []
 
-def procesar_gramatica(gramatica):
-    producciones = {}
-    for linea in gramatica:
-        partes = linea.split("->")
-        no_terminal = partes[0].strip()
-        reglas = [regla.strip() for regla in partes[1].split("|")]
-        producciones[no_terminal] = reglas
-    return producciones
+        for produccion in producciones:
+            while len(produccion) > 2:
+                nuevo_no_terminal = f"X{contador_auxiliar}"
+                contador_auxiliar += 1
 
-def encontrar_anulables(producciones):
-    anulables = set()
-    for no_terminal, reglas in producciones.items():
-        for regla in reglas:
-            if regla == 'e': 
-                anulables.add(no_terminal)
-    return anulables
+                nueva_gramatica[nuevo_no_terminal] = [[produccion[0], produccion[1]]]
+                produccion = [nuevo_no_terminal] + produccion[2:]
 
-def generar_producciones_sin_anulables(regla, anulables):
-    if not any(simbolo in anulables for simbolo in regla):
-        return {regla}
-    
-    nuevas_producciones = set()
-    for i, simbolo in enumerate(regla):
-        if simbolo in anulables:
-            nueva = regla[:i] + regla[i+1:]
-            if nueva:
-                nuevas_producciones.add(nueva)
-    return nuevas_producciones
+            nueva_gramatica[no_terminal].append(produccion)
 
-def eliminar_producciones_e(producciones):
-    anulables = encontrar_anulables(producciones)
-    print(f"Símbolos anulables encontrados: {anulables}")
-    
-    nuevas_producciones = {}
-    for no_terminal, reglas in producciones.items():
-        nuevas_reglas = set(reglas)  
-        for regla in reglas:
-            if any(simbolo in anulables for simbolo in regla):
-                nuevas_reglas.update(generar_producciones_sin_anulables(regla, anulables))
+    return nueva_gramatica
+
+def eliminar_epsilon(gramatica):
+    """
+    Elimina las producciones epsilon de la gramática.
+    :param gramatica: Diccionario que representa las producciones de la gramática.
+    :return: Gramática sin producciones epsilon.
+    """
+    # Identificar no terminales que producen epsilon
+    generadores_epsilon = set()
+    for no_terminal, producciones in gramatica.items():
+        for produccion in producciones:
+            if produccion == ['ε']:
+                generadores_epsilon.add(no_terminal)
+
+    # Remover producciones epsilon directas
+    for no_terminal in generadores_epsilon:
+        gramatica[no_terminal] = [prod for prod in gramatica[no_terminal] if prod != ['ε']]
+
+    for no_terminal, producciones in list(gramatica.items()):
+        nuevas_producciones = set()
+        for produccion in producciones:
+            combinaciones = [produccion]
+            for simbolo in produccion:
+                if simbolo in generadores_epsilon:
+                    nuevas_combinaciones = []
+                    for comb in combinaciones:
+                        nueva_comb = [s for s in comb if s != simbolo]
+                        nuevas_combinaciones.append(comb)
+                        if nueva_comb:
+                            nuevas_combinaciones.append(nueva_comb)
+                    combinaciones = nuevas_combinaciones
+            nuevas_producciones.update(tuple(comb) for comb in combinaciones if comb)
+
+        gramatica[no_terminal].extend(list(nuevas_producciones))
+
+    for no_terminal, producciones in gramatica.items():
+        gramatica[no_terminal] = [list(prod) for prod in set(tuple(p) for p in producciones)]
+
+    return gramatica
+
+def eliminar_unarias(gramatica):
+    """
+    Elimina las producciones unitarias de la gramática.
+    :param gramatica: Diccionario que representa las producciones de la gramática.
+    :return: Gramática sin producciones unitarias.
+    """
+    nueva_gramatica = {nt: [] for nt in gramatica}
+
+    for no_terminal, producciones in gramatica.items():
+        no_unitarias = [prod for prod in producciones if len(prod) != 1 or prod[0] not in gramatica]
+        nueva_gramatica[no_terminal].extend(no_unitarias)
+
+        unitarias = [prod[0] for prod in producciones if len(prod) == 1 and prod[0] in gramatica]
+        while unitarias:
+            unidad = unitarias.pop()
+            for prod in gramatica[unidad]:
+                if len(prod) != 1 or prod[0] not in gramatica:
+                    if prod not in nueva_gramatica[no_terminal]:
+                        nueva_gramatica[no_terminal].append(prod)
+                elif prod[0] not in unitarias:
+                    unitarias.append(prod[0])
+
+    return nueva_gramatica
+
+def gr_reader(file_path):
+    gramatica = {}
+    simbolo_inicial = None
+
+    with open(file_path, 'r') as file:
+        for linea in file:
+            linea = linea.strip()
+
+            # Aquí nos encargamos de separar la parte izquierda de la derecha
+            # La parte de la producción y del símbolo que la produce
+            if "->" in linea:
+                no_terminal, producciones = linea.split("->")
+                no_terminal = no_terminal.strip()
+                producciones = producciones.strip().split("|")
+
+                # Si es la primera vez que vemos un no terminal, lo usamos como símbolo inicial
+                if simbolo_inicial is None:
+                    simbolo_inicial = no_terminal
+
+                if no_terminal not in gramatica:
+                    gramatica[no_terminal] = [prod.strip().split() for prod in producciones]
+                else:
+                    gramatica[no_terminal].extend([prod.strip().split() for prod in producciones])
+
+    print("\nGramática leída:")
+    for nt, prods in gramatica.items():
+        for prod in prods:
+            print(f"{nt} -> {' '.join(prod)}")
+
+    return gramatica, simbolo_inicial
+
+def print_g (gramatica):
+    for no_terminal, producciones in gramatica.items():
+        producciones_formateadas = " | ".join(" ".join(prod) for prod in producciones)
+        print(f"{no_terminal} -> {producciones_formateadas}")
         
-        nuevas_reglas.discard('e')
-        nuevas_producciones[no_terminal] = list(nuevas_reglas)
-    
-    return nuevas_producciones
 
-def mostrar_producciones(producciones):
-    print("\nProducciones actuales:")
-    for no_terminal, reglas in producciones.items():
-        print(f"{no_terminal} -> {' | '.join(reglas)}")
 
-def main():
-    archivo1 = 'Gramatica1.txt'
-    archivo2 = 'Gramatica2.txt'
+file_path = "Gramatica2.txt"
+gramatica, simbolo_inicial = gr_reader(file_path)
 
-    gramaticas = [cargar_gramatica(archivo1), cargar_gramatica(archivo2)]
-    
-    for gramatica in gramaticas:
-        for produccion in gramatica:
-            if not validar_produccion(produccion):
-                print(f"Producción inválida: {produccion}")
-                return
-        
-        producciones = procesar_gramatica(gramatica)
-        print("\nGramática cargada:")
-        mostrar_producciones(producciones)
-        
-        producciones_sin_epsilon = eliminar_producciones_e(producciones)
-        
-        print("\nGramática sin producciones-e:")
-        mostrar_producciones(producciones_sin_epsilon)
+start_time = time.time()
 
-if __name__ == '__main__':
-    main()
+print("\nEliminando producciones epsilon...")
+gramatica = eliminar_epsilon(gramatica)
+print_g(gramatica)
+
+print("\nEliminando producciones unitarias...")
+gramatica = eliminar_unarias(gramatica)
+print_g(gramatica)
